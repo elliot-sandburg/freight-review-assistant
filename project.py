@@ -1,13 +1,7 @@
-"""
-Freight Invoice & Receiving Review Assistant
-CS50P Final Project
-Author: Elliot Sandburg
-"""
-
 import math
-from tabulate import tabulate
+from decimal import Decimal
 
-# Standardized Status Constants
+# Operational review statuses
 STATUS_WITHIN_TOLERANCE = "WITHIN_TOLERANCE"
 STATUS_REVIEW_REQUIRED = "REVIEW_REQUIRED"
 STATUS_COMPLIANT = "COMPLIANT"
@@ -15,246 +9,219 @@ STATUS_EXCEEDS_AGREED_RATE = "EXCEEDS_AGREED_RATE"
 STATUS_UNLISTED_SERVICE = "UNLISTED_SERVICE"
 
 
-def _validate_numeric(val: object, name: str, allow_zero: bool = False) -> float:
-    """Helper to enforce finite, non-boolean numeric inputs."""
-    if isinstance(val, bool) or not isinstance(val, (int, float)):
-        raise TypeError(f"{name} must be a valid number, not boolean or string.")
+def _validate_numeric(val, name="Value", allow_zero=False):
+    """
+    Validates that a numeric argument is a finite integer or float.
+    Rejects booleans, non-numeric types, non-finite values, and invalid signs.
+    """
+    if isinstance(val, bool):
+        raise TypeError(f"{name} must be a number, not a boolean.")
+    if not isinstance(val, (int, float)):
+        raise TypeError(f"{name} must be an integer or float.")
     if not math.isfinite(val):
-        raise ValueError(f"{name} must be a finite number (cannot be NaN or Inf).")
+        raise ValueError(f"{name} must be a finite number.")
     if allow_zero:
         if val < 0:
             raise ValueError(f"{name} cannot be negative.")
     else:
         if val <= 0:
-            raise ValueError(f"{name} must be a positive non-zero number.")
-    return float(val)
+            raise ValueError(f"{name} must be strictly positive.")
+    return val
 
 
-def verify_manifest_weight(manifest_weight: float, scale_weight: float, tolerance_pct: float = 0.05) -> tuple[float, float, str]:
+def _normalize_and_validate_charges(charges_dict, dict_name="Charges"):
     """
-    Compares declared manifest/BOL weight against recorded receiving dock scale weight.
-    Returns: (weight_diff, variance_pct, status)
+    Validates accessorial fee schedules and billed charges.
+    Normalizes codes (.strip().upper()) and detects normalized-key collisions.
     """
-    manifest_val = _validate_numeric(manifest_weight, "Manifest weight", allow_zero=False)
-    scale_val = _validate_numeric(scale_weight, "Scale weight", allow_zero=False)
-    tol_val = _validate_numeric(tolerance_pct, "Tolerance percentage", allow_zero=True)
+    if not isinstance(charges_dict, dict):
+        raise TypeError(f"{dict_name} must be a dictionary.")
 
-    raw_diff = scale_val - manifest_val
-    raw_variance_pct = (raw_diff / manifest_val) * 100.0
+    normalized = {}
+    for raw_code, amount in charges_dict.items():
+        if not isinstance(raw_code, str):
+            raise ValueError(f"Service code {raw_code!r} must be a string.")
 
-    # Direct threshold comparison with floating-point tolerance handling
-    allowed_diff = manifest_val * tol_val
-    if abs(raw_diff) <= allowed_diff or math.isclose(abs(raw_diff), allowed_diff, rel_tol=1e-9):
-        status = STATUS_WITHIN_TOLERANCE
-    else:
-        status = STATUS_REVIEW_REQUIRED
+        cleaned_code = raw_code.strip().upper()
+        if not cleaned_code:
+            raise ValueError(
+                f"Service code in {dict_name} cannot be empty or whitespace-only."
+            )
 
-    return round(raw_diff, 2), round(raw_variance_pct, 2), status
+        if cleaned_code in normalized:
+            raise ValueError(
+                f"Duplicate service code collision detected: '{cleaned_code}' in {dict_name}."
+            )
+
+        _validate_numeric(amount, name=f"Amount for code '{cleaned_code}'", allow_zero=True)
+        # Store as standard two-decimal cent representation
+        normalized[cleaned_code] = round(float(amount), 2)
+
+    return normalized
 
 
-def audit_accessorial_charges(billed_charges: dict[str, float], contract_schedule: dict[str, float]) -> tuple[float, list[dict]]:
+def verify_manifest_weight(manifest_weight, scale_weight, tolerance_pct=0.05):
     """
-    Audits line-item carrier surcharges against demonstration tariff fee schedules.
-    Returns: (total_flagged_amount, itemized_audit_log)
+    Audits physical scale weight against the billed manifest weight.
+    Applies a two-sided inclusive tolerance threshold.
+    Returns: (signed_difference, signed_percentage, status)
     """
-    if not isinstance(billed_charges, dict) or not isinstance(contract_schedule, dict):
-        raise TypeError("Billed charges and contract schedule must be dictionaries.")
+    _validate_numeric(manifest_weight, "Manifest weight", allow_zero=False)
+    _validate_numeric(scale_weight, "Scale weight", allow_zero=False)
+    _validate_numeric(tolerance_pct, "Tolerance percentage", allow_zero=True)
 
-    # 1. Normalize and validate contract schedule upfront (detect empty codes and collisions)
-    normalized_schedule: dict[str, float] = {}
-    for code, amt in contract_schedule.items():
-        if not isinstance(code, str) or not code.strip():
-            raise ValueError("Contract fee codes must be non-empty strings.")
-        clean_code = code.strip().upper()
-        if clean_code in normalized_schedule:
-            raise ValueError(f"Normalization collision in contract schedule: '{clean_code}' defined multiple times.")
-        validated_amt = _validate_numeric(amt, f"Contract fee for {clean_code}", allow_zero=True)
-        normalized_schedule[clean_code] = validated_amt
+    # Use Decimal to eliminate floating-point artifacts without widening business tolerance
+    m_dec = Decimal(str(manifest_weight))
+    s_dec = Decimal(str(scale_weight))
+    tol_dec = Decimal(str(tolerance_pct))
 
-    # 2. Normalize and validate billed charges upfront (detect empty codes and collisions)
-    normalized_billed: dict[str, float] = {}
-    for code, amt in billed_charges.items():
-        if not isinstance(code, str) or not code.strip():
-            raise ValueError("Billed fee codes must be non-empty strings.")
-        clean_code = code.strip().upper()
-        if clean_code in normalized_billed:
-            raise ValueError(f"Duplicate/colliding billed fee code: '{clean_code}' appears multiple times.")
-        validated_amt = _validate_numeric(amt, f"Billed amount for {clean_code}", allow_zero=True)
-        normalized_billed[clean_code] = validated_amt
+    diff_dec = s_dec - m_dec
+    pct_dec = (diff_dec / m_dec) * Decimal("100")
+    allowed_diff = m_dec * tol_dec
 
-    audit_log = []
-    total_flagged_amount = 0.0
+    status = (
+        STATUS_WITHIN_TOLERANCE
+        if abs(diff_dec) <= allowed_diff
+        else STATUS_REVIEW_REQUIRED
+    )
 
-    # 3. Process normalized billing against schedule
-    for clean_code, billed_val in normalized_billed.items():
-        if clean_code not in normalized_schedule:
+    return float(round(diff_dec, 2)), float(round(pct_dec, 2)), status
+
+
+def audit_accessorial_charges(billed_charges, contract_schedule):
+    """
+    Audits billed accessorial line items against the contracted fee schedule.
+    Returns: (total_review_amount, list_of_line_item_findings)
+    """
+    billed = _normalize_and_validate_charges(billed_charges, "billed charges")
+    contract = _normalize_and_validate_charges(contract_schedule, "contract schedule")
+
+    total_review = Decimal("0.00")
+    line_items = []
+
+    for code, b_amt in billed.items():
+        b_dec = Decimal(str(b_amt))
+        if code not in contract:
+            c_dec = None
+            var_dec = b_dec
             status = STATUS_UNLISTED_SERVICE
-            contract_val = None
-            review_amount = billed_val
-            total_flagged_amount += review_amount
         else:
-            contract_val = normalized_schedule[clean_code]
-            if billed_val > contract_val:
+            c_dec = Decimal(str(contract[code]))
+            if b_dec > c_dec:
+                var_dec = b_dec - c_dec
                 status = STATUS_EXCEEDS_AGREED_RATE
-                review_amount = billed_val - contract_val
-                total_flagged_amount += review_amount
             else:
+                var_dec = Decimal("0.00")
                 status = STATUS_COMPLIANT
-                review_amount = 0.0
 
-        audit_log.append({
-            "code": clean_code,
-            "billed": round(billed_val, 2),
-            "contract": round(contract_val, 2) if contract_val is not None else None,
-            "variance": round(review_amount, 2),
-            "status": status
+        total_review += var_dec
+        line_items.append({
+            "code": code,
+            "billed": float(b_dec),
+            "contract": float(c_dec) if c_dec is not None else None,
+            "variance": float(var_dec),
+            "status": status,
         })
 
-    return round(total_flagged_amount, 2), audit_log
+    return float(total_review), line_items
 
 
-def calculate_rate_variance(quoted_rate: float, billed_rate: float, tolerance_pct: float = 0.02) -> dict:
+def calculate_rate_variance(quoted_rate, billed_rate, tolerance_pct=0.02):
     """
-    Compares contracted PO base freight quote to billed base freight rate.
-    Flags ceiling increases exceeding the configured tolerance.
+    Audits the billed base linehaul rate against the agreed quote.
+    Applies a one-sided ceiling check (lower billed rates are compliant).
     Returns: dict with quoted, billed, diff, variance_pct, and status.
     """
-    quoted_val = _validate_numeric(quoted_rate, "Quoted rate", allow_zero=False)
-    billed_val = _validate_numeric(billed_rate, "Billed rate", allow_zero=False)
-    tol_val = _validate_numeric(tolerance_pct, "Tolerance percentage", allow_zero=True)
+    _validate_numeric(quoted_rate, "Quoted rate", allow_zero=False)
+    _validate_numeric(billed_rate, "Billed rate", allow_zero=False)
+    _validate_numeric(tolerance_pct, "Tolerance percentage", allow_zero=True)
 
-    raw_diff = billed_val - quoted_val
-    raw_variance_pct = (raw_diff / quoted_val) * 100.0
+    q_dec = Decimal(str(quoted_rate))
+    b_dec = Decimal(str(billed_rate))
+    tol_dec = Decimal(str(tolerance_pct))
 
-    allowed_increase = quoted_val * tol_val
-    if raw_diff <= allowed_increase or math.isclose(raw_diff, allowed_increase, rel_tol=1e-9):
-        status = STATUS_WITHIN_TOLERANCE
-    else:
-        status = STATUS_REVIEW_REQUIRED
+    diff_dec = b_dec - q_dec
+    pct_dec = (diff_dec / q_dec) * Decimal("100")
+    allowed_increase = q_dec * tol_dec
+
+    status = (
+        STATUS_WITHIN_TOLERANCE
+        if diff_dec <= allowed_increase
+        else STATUS_REVIEW_REQUIRED
+    )
 
     return {
-        "quoted": round(quoted_val, 2),
-        "billed": round(billed_val, 2),
-        "diff": round(raw_diff, 2),
-        "variance_pct": round(raw_variance_pct, 2),
-        "status": status
+        "quoted": float(round(q_dec, 2)),
+        "billed": float(round(b_dec, 2)),
+        "diff": float(round(diff_dec, 2)),
+        "variance_pct": float(round(pct_dec, 2)),
+        "status": status,
     }
 
 
-def main() -> None:
-    # Demonstration shipment scenario using synthetic operational data
-    scenario = {
-        "po_number": "PO-99482-EUG",
-        "invoice_number": "INV-788102",
-        "carrier_name": "Example Freight Carrier",
-        "manifest_weight": 4200.0,
-        "scale_weight": 4550.0,
-        "weight_tolerance": 0.05,
-        "quoted_base_rate": 450.00,
-        "billed_base_rate": 475.00,
-        "rate_tolerance": 0.02,
-        "contract_schedule": {
-            "LIFTGATE": 65.00,
-            "NOTIFY": 20.00,
-            "LIMITED_ACCESS": 45.00
-        },
-        "billed_surcharges": {
-            "LIFTGATE": 85.00,
-            "NOTIFY": 20.00,
-            "DETENTION": 120.00
-        }
+def main():
+    po_number = "PO-2026-8841"
+    manifest_wt = 4200
+    scale_wt = 4550
+    weight_tol = 0.05
+
+    quoted_base = 450.00
+    billed_base = 475.00
+    base_tol = 0.02
+
+    billed_accessorials = {
+        "LIFTGATE": 85.00,
+        "NOTIFY": 0.00,
+        "DETENTION": 120.00,
+    }
+    contract_accessorials = {
+        "liftgate": 65.00,
+        "notify": 0.00,
     }
 
-    # 1. Execute Weight Audit
-    wt_diff, wt_var_pct, wt_status = verify_manifest_weight(
-        scenario["manifest_weight"],
-        scenario["scale_weight"],
-        scenario["weight_tolerance"]
+    w_diff, w_pct, w_status = verify_manifest_weight(manifest_wt, scale_wt, weight_tol)
+    base_res = calculate_rate_variance(quoted_base, billed_base, base_tol)
+    review_total, accessorial_log = audit_accessorial_charges(
+        billed_accessorials, contract_accessorials
     )
 
-    # 2. Execute Surcharge Audit
-    surcharge_total, surcharge_log = audit_accessorial_charges(
-        scenario["billed_surcharges"],
-        scenario["contract_schedule"]
-    )
+    print("=" * 64)
+    print(f"FREIGHT AUDIT REVIEW SUMMARY — {po_number}")
+    print("=" * 64)
 
-    # 3. Execute Rate Variance Audit
-    rate_audit = calculate_rate_variance(
-        scenario["quoted_base_rate"],
-        scenario["billed_base_rate"],
-        scenario["rate_tolerance"]
-    )
+    print("\n[1] RECEIVING WEIGHT AUDIT")
+    print(f"  Manifest Weight : {manifest_wt} lbs")
+    print(f"  Scale Weight    : {scale_wt} lbs")
+    print(f"  Variance        : {w_diff:+.2f} lbs ({w_pct:+.2f}%)")
+    print(f"  Threshold       : ±{weight_tol * 100:.2f}% (unrounded comparison)")
+    print(f"  Status          : {w_status}")
+    if w_status == STATUS_REVIEW_REQUIRED:
+        print(f"  Notice          : Absolute weight variance exceeds ±{weight_tol * 100:.2f}% tolerance.")
 
-    # Presentation Output
-    print("=" * 80)
-    print("           FREIGHT INVOICE & RECEIVING REVIEW ASSISTANT")
-    print("=" * 80)
-    print(f"PO Number: {scenario['po_number']:<28} Carrier: {scenario['carrier_name']}")
-    print(f"Invoice #: {scenario['invoice_number']:<28} Mode: Synthetic Demonstration")
-    print("-" * 80)
+    print("\n[2] BASE FREIGHT RATE AUDIT")
+    print(f"  Quoted Rate     : ${base_res['quoted']:.2f}")
+    print(f"  Billed Rate     : ${base_res['billed']:.2f}")
+    print(f"  Variance        : ${base_res['diff']:+.2f} ({base_res['variance_pct']:+.2f}%)")
+    print(f"  Allowed Ceiling : +{base_tol * 100:.2f}%")
+    print(f"  Status          : {base_res['status']}")
+    if base_res['status'] == STATUS_REVIEW_REQUIRED:
+        print(f"  Notice          : Billed rate exceeds quoted ceiling by ${base_res['diff'] - (base_res['quoted'] * base_tol):.2f}.")
 
-    print("\n[1] PHYSICAL CARGO WEIGHT VERIFICATION")
-    weight_table = [[
-        f"{scenario['manifest_weight']:,.2f}",
-        f"{scenario['scale_weight']:,.2f}",
-        f"{wt_diff:+,.2f}",
-        f"{wt_var_pct:+.2f}%",
-        wt_status
-    ]]
-    print(tabulate(
-        weight_table,
-        headers=["Manifest (lb)", "Scale (lb)", "Diff (lb)", "Variance %", "Audit Status"],
-        tablefmt="grid",
-        disable_numparse=True
-    ))
-    if wt_status == STATUS_REVIEW_REQUIRED:
-        print(f"Notice: Scale weight variance ({wt_var_pct:+.2f}%) exceeds threshold ({scenario['weight_tolerance'] * 100:.2f}%).")
+    print("\n[3] ACCESSORIAL SURCHARGES AUDIT")
+    print(f"  {'CODE':<14} {'BILLED':>10} {'CONTRACT':>10} {'REVIEW AMT':>12} {'STATUS'}")
+    print("  " + "-" * 60)
+    for item in accessorial_log:
+        c_disp = f"${item['contract']:.2f}" if item['contract'] is not None else "UNLISTED"
+        print(f"  {item['code']:<14} ${item['billed']:>9.2f} {c_disp:>10} ${item['variance']:>11.2f} {item['status']}")
+    print("  " + "-" * 60)
+    print(f"  Total Surcharge Review Amount: ${review_total:.2f}")
 
-    print("\n[2] ACCESSORIAL SURCHARGE COMPLIANCE AUDIT")
-    surcharge_table = []
-    for item in surcharge_log:
-        contract_display = f"${item['contract']:,.2f}" if item["contract"] is not None else "Not Listed"
-        surcharge_table.append([
-            item["code"],
-            f"${item['billed']:,.2f}",
-            contract_display,
-            f"${item['variance']:,.2f}",
-            item["status"]
-        ])
-    print(tabulate(
-        surcharge_table,
-        headers=["Service Code", "Billed", "Contracted", "Review Amount", "Finding Status"],
-        tablefmt="grid",
-        disable_numparse=True
-    ))
-    print(f"Total Surcharge Amount Requiring Review: ${surcharge_total:,.2f}")
-
-    print("\n[3] BASE FREIGHT LINE-HAUL RATE VARIANCE")
-    rate_table = [[
-        f"${rate_audit['quoted']:,.2f}",
-        f"${rate_audit['billed']:,.2f}",
-        f"{rate_audit['diff']:+,.2f}",
-        f"{rate_audit['variance_pct']:+.2f}%",
-        rate_audit["status"]
-    ]]
-    print(tabulate(
-        rate_table,
-        headers=["Quoted Rate", "Billed Rate", "Diff ($)", "Variance %", "Audit Status"],
-        tablefmt="grid",
-        disable_numparse=True
-    ))
-    if rate_audit["status"] == STATUS_REVIEW_REQUIRED:
-        print(f"Notice: Base rate variance ({rate_audit['variance_pct']:+.2f}%) exceeds threshold ({scenario['rate_tolerance'] * 100:.2f}%).")
-
-    print("\n" + "=" * 80)
-    print("RECONCILIATION SUMMARY:")
-    print(f"- Weight Status:           {wt_status}")
-    print(f"- Base Rate Status:        {rate_audit['status']} (${rate_audit['diff']:+,.2f})")
-    print(f"- Surcharges for Review:   ${surcharge_total:,.2f}")
-    print("-" * 80)
-    print("* Disclaimer: Demonstration findings only. Results identify comparison differences")
-    print("  for human coordinator review and do not establish contractual or legal liability.")
-    print("=" * 80)
+    print("\n" + "=" * 64)
+    print("AUDIT FINDINGS DISCLAIMER:")
+    print("This report highlights discrepancies requiring human operational review.")
+    print("It does not constitute a legal determination of contractual liability.")
+    print("=" * 64)
+    return None
 
 
 if __name__ == "__main__":
