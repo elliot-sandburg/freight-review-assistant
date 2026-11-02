@@ -1,5 +1,5 @@
 # Freight Invoice & Receiving Review Assistant
-#### Video Demo:  <YOUR_YOUTUBE_UNLISTED_LINK_HERE>
+#### Video Demo:  <https://www.youtube.com/watch?v=7X8D1ITSqHw>
 #### Description:
 
 ### Why I Built This
