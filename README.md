@@ -2,6 +2,8 @@
 
 #### Video Demo: https://www.youtube.com/watch?v=7X8D1ITSqHw
 
+![Terminal Demo](freight%20review%20assistant%20picture.png)
+
 ## Description
 
 Freight invoices don't always match what was agreed to. The weight on the bill might not match what the dock scale read, a liftgate or detention fee might show up that nobody approved, or the linehaul rate might creep above the quote. This tool checks those invoices before anyone pays them. It compares scale weights, base rates, and accessorial charges against the contracted tariff and the original quote, then produces an itemized summary of anything that needs a person to look at it.
