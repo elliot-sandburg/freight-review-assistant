@@ -2,21 +2,38 @@
 #### Video Demo:  <https://www.youtube.com/watch?v=7X8D1ITSqHw>
 #### Description:
 
+<<<<<<< HEAD
 ### Why I Built This
 Freight bills often don't match what was agreed to. A carrier might bill for a different weight than the warehouse scale recorded, tack on a liftgate or residential delivery fee nobody approved, or quote a higher linehaul rate than the one on the purchase order. Catching these by hand means flipping between the bill of lading, scale tickets, and the invoice, and it's easy to miss something. This project is a small Python tool that does that comparison for me and produces a report listing what needs a human to look at before anyone pays.
+=======
+#### Video Demo: https://www.youtube.com/watch?v=7X8D1ITSqHw
+>>>>>>> d2d0ed7 (docs: complete readme with execution instructions and sample audit output)
 
 ### Project Files
 
+<<<<<<< HEAD
 #### `project.py`
 This is the main program. It has four functions.
 
 1. `verify_manifest_weight(manifest_weight, scale_weight, tolerance_pct=0.05)` compares the weight on the manifest to the warehouse scale reading. I check both directions, since a shortage could mean lost freight and an overage could mean the carrier is padding the bill. It returns the weight difference, the percentage variance, and a status of `MATCH`, `WITHIN_TOLERANCE`, or `REVIEW_REQUIRED`. It raises an error if any weight or tolerance is negative or not a number.
+=======
+Freight invoices don't always match what was agreed to. The weight on the bill might not match what the dock scale read, a liftgate or detention fee might show up that nobody approved, or the linehaul rate might creep above the quote. This tool checks those invoices before anyone pays them. It compares scale weights, base rates, and accessorial charges against the contracted tariff and the original quote, then produces an itemized summary of anything that needs a person to look at it.
+>>>>>>> d2d0ed7 (docs: complete readme with execution instructions and sample audit output)
 
 2. `audit_accessorial_charges(billed_charges, contract_schedule)` checks surcharges against the contract. Service codes get stripped and uppercased first so that `" ldg "` and `"LDG"` count as the same thing. Any charge that isn't in the contract gets flagged in full, and any charge above the contracted cap gets flagged for the amount over. The function returns the total dollars needing review along with a line-by-line list. It also raises an error if the contract has duplicate codes, since that would make the lookup ambiguous.
 
+<<<<<<< HEAD
 3. `calculate_rate_variance(quoted_rate, billed_rate, tolerance_pct=0.02)` compares the billed linehaul rate to the quote. This one only cares about going over. A lower rate is a discount, so it passes. A higher rate passes only if it's inside the 2% tolerance. The function returns a dictionary with the quote, the billed amount, the dollar difference, the percentage difference, and the status.
 
 4. `main()` runs a demo on a sample shipment, `PO-2026-8841`. It goes through the scale weights, linehaul amount, and accessorial fees, then prints a readable report with the items that need review.
+=======
+## Project Structure
+
+- **`project.py`**: The audit logic, input validation, and a command-line demo report.
+- **`test_project.py`**: `pytest` unit tests for the three core functions.
+- **`requirements.txt`**: The external dependencies (just `pytest`).
+- **`README.md`**: This file.
+>>>>>>> d2d0ed7 (docs: complete readme with execution instructions and sample audit output)
 
 #### `test_project.py`
 These are `pytest` tests for the three audit functions. Each function has its own test. They cover exact matches, small variances that should pass, overages and shortages that should get flagged, and bad inputs that should raise errors. The accessorial test also checks that casing and extra spaces get normalized and that duplicate codes are caught.
@@ -24,6 +41,7 @@ These are `pytest` tests for the three audit functions. Each function has its ow
 #### `requirements.txt`
 This only lists `pytest`, which is the one thing you need to run the tests.
 
+<<<<<<< HEAD
 ### Design Choices
 The audit functions don't print anything or ask for input. They take values in and return tuples, dictionaries, and lists. I did this so the logic could be tested without mocking the terminal, and so the printing could change later without touching the math.
 
@@ -37,3 +55,35 @@ pip install -r requirements.txt
 pytest
 ```
 To see the sample report, run `python project.py`.
+=======
+1. **`verify_manifest_weight(manifest_weight, scale_weight, tolerance_pct=0.05)`**
+   Compares the scale weight with the billed manifest weight. The check runs in both directions, with a default tolerance of ±5%, so it catches heavy overages and suspicious underages alike. Returns `(difference, percentage, status)`.
+
+2. **`audit_accessorial_charges(billed_charges, contract_schedule)`**
+   Checks each billed surcharge against the agreed tariff. Service codes are trimmed and uppercased before comparison, and the function raises an error if the same code shows up in more than one form. Any service not on the schedule is flagged for review in full, and any charge above its contracted rate is flagged for the overage. Returns `(total_review_amount, line_items_list)`.
+
+3. **`calculate_rate_variance(quoted_rate, billed_rate, tolerance_pct=0.02)`**
+   Checks the billed linehaul rate against the quote. This is a one-sided ceiling: a lower billed rate is fine since it favors the shipper, but an increase beyond the tolerance gets flagged. Returns a dictionary with the quoted rate, billed rate, variance, percentage, and review status.
+
+4. **`main()`**
+   Runs an end-to-end demo using sample data for purchase order `PO-2026-8841` and prints an itemized table with review notices.
+
+---
+
+## Design Decisions
+
+- **One-sided rate ceiling:** A billed rate below the quote is treated as compliant, since the shipper benefits.
+- **Two-sided weight tolerance:** A shipment that weighs more or less than the manifest can both point to a receiving error or missing freight, so both directions get checked.
+- **Defensive validation:** Bad inputs are rejected up front: wrong types, negative amounts, and zeros where they don't make sense.
+- **Human in the loop:** The statuses (`REVIEW_REQUIRED`, `EXCEEDS_AGREED_RATE`, `UNLISTED_SERVICE`) mark items for a person to review. They aren't legal findings about who owes what.
+
+---
+
+## Installation & Usage
+
+1. Install the dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+>>>>>>> d2d0ed7 (docs: complete readme with execution instructions and sample audit output)
